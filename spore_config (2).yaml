@@ -1,0 +1,128 @@
+# ============================================================================
+#  SPORE — Systematic Preprocessing and Optimization for Robust Evaluation
+#  Configuration File  ·  Tuned for: Replogle 2022 K562 GWPS
+# ============================================================================
+
+# ── Paths ───────────────────────────────────────────────────────────────────
+paths:
+  project_root: "/scratch/patrick.sheehan/MYCELIUM/SPORE"
+  raw_h5ad: "raw_h5ads/K562_gwps_raw_singlecell_01_sparse.h5ad"
+  processed_dir: "processed"
+  splits_dir: "splits"
+  figures_dir: "figures"
+  output_graphs_dir: "output_graphs"
+  log_dir: "logs"
+
+# ── Dataset Metadata ────────────────────────────────────────────────────────
+dataset:
+  name: "Replogle_2022_K562_GWPS"
+  organism: "human"                  # human | mouse  (controls MT-/mt- prefix)
+  cell_line: "K562"
+  perturbation_type: "CRISPRi"
+  perturbation_col: "gene"           # .obs column holding perturbation labels
+  control_label: "non-targeting"     # label for unperturbed control cells
+  batch_col: "gem_group"             # .obs column for batch identity (null if none)
+
+# ── Runtime / HPC ──────────────────────────────────────────────────────────
+runtime:
+  n_jobs: 8                          # parallel workers (you have 16 CPUs; 8 is safe)
+  sparse_on_load: true               # force CSR conversion immediately after loading
+  memory_monitor: true               # log RAM usage at each phase boundary
+
+# ── Phase 1 · Cell-Level Triage ─────────────────────────────────────────────
+phase1_cell_triage:
+  mt_method: "explicit_list"         # explicit_list | prefix
+  mt_threshold: 0.20                 # max fraction MT reads (20% for K562)
+  mt_genes:
+    - MT-ND1
+    - MT-ND2
+    - MT-ND3
+    - MT-ND4
+    - MT-ND4L
+    - MT-ND5
+    - MT-ND6
+    - MT-CO1
+    - MT-CO2
+    - MT-CO3
+    - MT-ATP6
+    - MT-ATP8
+    - MT-CYB
+
+  ribo_prefixes: ["RPL", "RPS"]
+
+  min_genes_per_cell: 200
+  max_genes_per_cell: 10000
+  min_counts_per_cell: 500
+  max_counts_per_cell: 80000
+
+# ── Phase 2 · Escaper Filtering ─────────────────────────────────────────────
+phase2_escaper_filtering:
+  escaper_percentile: 10
+  min_cells_per_perturbation: 50
+
+# ── Phase 3 · Gene-Level Triage ─────────────────────────────────────────────
+phase3_gene_triage:
+  min_cells_expressing: 10
+  small_dataset_threshold: 50000
+  pct_filter: 0.05
+  mean_umi_threshold: 0.25
+  rescue_perturbation_targets: true
+
+# ── Phase 4 · Data Splits ───────────────────────────────────────────────────
+phase4_splits:
+  mode: "zero_shot"                   # zero_shot | cell_wise
+  random_seed: 42
+  test_mode: false
+  test_mode_seeds: [42, 123, 256, 789, 1024]
+
+  zero_shot:
+    train_test_ratio: 0.90
+    validation_ratio: 0.15
+    stratify_by: "mean_shift"         # mean_shift (fast) | deg_count (slow but exact)
+    stratify_bins: 4
+    deg_threshold: 0.05
+
+  cell_wise:
+    train_ratio: 0.80
+    val_ratio: 0.10
+    test_ratio: 0.10
+
+# ── Phase 5 · Dimensionality Reduction (Optional) ──────────────────────────
+phase5_hvg:
+  enabled: true
+  n_top_genes: 5000
+  method: "seurat_v3"
+  rescue_perturbation_targets: true
+
+# ── Phase 6 · Normalization & Scaling ───────────────────────────────────────
+phase6_normalization:
+  target_sum: null                    # null → median total counts
+  log_transform: true
+
+# ── Phase 7 · Confounder Mitigation ────────────────────────────────────────
+phase7_confounders:
+  cell_cycle_regression: true
+  s_genes: "tirosh2016"
+  g2m_genes: "tirosh2016"
+
+  batch_correction:
+    enabled: true
+    method: "harmony"
+    batch_key: "gem_group"
+
+  imputation_prohibited: true
+  fit_on_train_only: true
+
+# ── Plotting ────────────────────────────────────────────────────────────────
+plotting:
+  style: "dark"
+  dpi: 200
+  figsize_default: [10, 6]
+  palette: "mako"
+  save_figures: true
+  figure_format: "png"
+
+# ── Downstream GRN ─────────────────────────────────────────────────────────
+downstream:
+  grn: "PSGRN"
+  output_format: "h5ad"
