@@ -13,8 +13,44 @@ PCA, regression, and batch correction.
 
 import numpy as np
 import scanpy as sc
+import anndata as ad
 from .utils import log_phase_header, snapshot, log_memory, force_gc
 
+def safe_in_memory_gene_subset(adata, keep_mask, logger):
+    """Imported from Phase 5 to perform O(1) feature pruning at the end of Phase 7."""
+    import scipy.sparse as sp
+    if keep_mask.all():
+        return adata
+    n_kept_genes = keep_mask.sum()
+    if sp.issparse(adata.X) and adata.X.format == "csr":
+        indptr, indices, data = adata.X.indptr, adata.X.indices, adata.X.data
+        col_mapping = np.zeros(adata.X.shape[1], dtype=np.int32) - 1
+        col_mapping[keep_mask] = np.arange(n_kept_genes, dtype=np.int32)
+        new_indptr = np.zeros_like(indptr)
+        write_ptr = 0
+        for i in range(len(indptr) - 1):
+            start, end = indptr[i], indptr[i+1]
+            new_indptr[i] = write_ptr
+            if start < end:
+                m_cols = col_mapping[indices[start:end]]
+                mask = m_cols >= 0
+                nnz_row = mask.sum()
+                if nnz_row > 0:
+                    indices[write_ptr : write_ptr + nnz_row] = m_cols[mask]
+                    data[write_ptr : write_ptr + nnz_row] = data[start:end][mask]
+                write_ptr += nnz_row
+        new_indptr[-1] = write_ptr
+        new_X = sp.csr_matrix((data[:write_ptr], indices[:write_ptr], new_indptr), shape=(adata.n_obs, n_kept_genes))
+    else:
+        new_X = adata.X[:, keep_mask]
+    new_var = adata.var.iloc[keep_mask].copy()
+    new_obs = adata.obs.copy()
+    new_obsm = {k: v.copy() for k, v in adata.obsm.items()} if hasattr(adata, 'obsm') else {}
+    new_varm = {k: v[keep_mask] for k, v in adata.varm.items()} if hasattr(adata, 'varm') else {}
+    new_uns = adata.uns.copy() if hasattr(adata, 'uns') else {}
+    del adata
+    force_gc(logger)
+    return ad.AnnData(X=new_X, obs=new_obs, var=new_var, obsm=new_obsm, varm=new_varm, uns=new_uns)
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  CELL CYCLE REGRESSION
@@ -137,6 +173,11 @@ def correct_batch_harmony(adata, batch_key: str, logger):
 
     try:
         import harmonypy
+        import logging
+        # ── LOGGER SUPPRESSION ──
+        # Muzzle harmonypy's text vomit so it doesn't clutter your notebook
+        logging.getLogger('harmonypy').setLevel(logging.ERROR)
+        
         logger.info(f"  Casting '{batch_key}' to categorical to satisfy harmonypy constraints...")
         adata.obs[batch_key] = adata.obs[batch_key].astype(str).astype('category')
         
@@ -236,6 +277,18 @@ def run_phase7(splits: dict, cfg: dict, logger):
     for key in ["train", "val", "test"]:
         logger.info(f"  Correcting {key} ...")
         splits[key] = correct_batch(splits[key], cfg, logger)
+
+    # ── FEATURE GHOST ASSASSINATION ──────────────────────────────────────────
+    logger.info("  ── Feature Pruning ──")
+    for key in ["train", "val", "test"]:
+        if "spore_core_features" in splits[key].uns:
+            core_genes = splits[key].uns["spore_core_features"]
+            if len(core_genes) < splits[key].n_vars:
+                n_ghosts = splits[key].n_vars - len(core_genes)
+                logger.info(f"  [{key}] Assassinating {n_ghosts} ghosted cell cycle genes...")
+                mask = np.array([g in core_genes for g in splits[key].var_names])
+                splits[key] = safe_in_memory_gene_subset(splits[key], keep_mask=mask, logger=logger)
+    # ─────────────────────────────────────────────────────────────────────────
 
     for key in ["train", "val", "test"]:
         snapshot(splits[key], f"Post Phase 7 ({key})", logger)
