@@ -114,12 +114,29 @@ def regress_cell_cycle(adata, logger):
 def correct_batch_harmony(adata, batch_key: str, logger):
     """Run Harmony integration on PCA space."""
     import scipy.sparse as sp
+    from sklearn.preprocessing import StandardScaler
+
     logger.info(f"  Running Harmony batch correction (key='{batch_key}') ...")
 
-    logger.info("  Scaling data (sparse-safe)...")
-    sc.pp.scale(adata, max_value=10, zero_center=False)
-    
-    # FIX: Add svd_solver='randomized' to prevent the CPU from hanging for hours
+    # FIX: Scanpy's sc.pp.scale allocates temporary float64 arrays which causes OOM at high baselines.
+    # We manually compute variance using sklearn's optimized C-backend and mutate the 1D C-buffer in-place.
+    logger.info("  Scaling data (ultra-low-RAM manual scale)...")
+    if sp.issparse(adata.X) and adata.X.format == "csr":
+        scaler = StandardScaler(with_mean=False)
+        scaler.fit(adata.X)
+
+        # Prevent division by zero
+        scale_factors = scaler.scale_
+        scale_factors[scale_factors == 0] = 1.0
+
+        # Mutate the raw data buffer directly in RAM (O(1) memory footprint)
+        adata.X.data /= scale_factors[adata.X.indices]
+
+        # Clip values to max_value=10 in-place
+        adata.X.data[adata.X.data > 10.0] = 10.0
+    else:
+        sc.pp.scale(adata, max_value=10, zero_center=False)
+
     logger.info("  Running PCA (sparse-safe, randomized solver)...")
     sc.pp.pca(adata, n_comps=50, use_highly_variable=False, zero_center=False, svd_solver='randomized')
 
